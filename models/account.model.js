@@ -1,6 +1,9 @@
 const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
 const crypto = require("crypto");
+require("dotenv").config();
+
+const imageAvatar = `https://res.cloudinary.com/${process.env.CLOUDINARY_CLOUD_NAME}/image/upload/v1731513700/hc9crwt3for3cddi2pdc.jpg`;
 const accountSchema = new mongoose.Schema(
   {
     username: {
@@ -24,6 +27,13 @@ const accountSchema = new mongoose.Schema(
     phone: {
       type: String,
       unique: true,
+    },
+    imageUrl: {
+      type: String,
+      default: imageAvatar,
+    },
+    publicId: {
+      type: String,
     },
     role: {
       type: String,

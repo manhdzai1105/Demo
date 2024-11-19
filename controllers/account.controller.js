@@ -1,12 +1,18 @@
 const accountModel = require("../models/account.model");
 const accountValid = require("../validations/account.valid");
+const accountUpdateValid = require("../validations/accountUpdate.valid");
 const ErrorResponse = require("../helpers/ErrorResponse");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const { mailSender } = require("../helpers/mail.sender");
 const crypto = require("crypto");
 const passwordValid = require("../validations/password.valid");
+const {
+  deleteImages,
+  restoreImage,
+} = require("../middlewares/uploadCloudinary");
 require("dotenv").config();
+const { PER_PAGE } = require("../constants/paging");
 
 const createAccount = async (req, res) => {
   const body = req.body;
@@ -157,6 +163,136 @@ const logOut = async (req, res) => {
   res.status(200).json({ message: "Logged out successfully" });
 };
 
+const profileAuthCurrent = async (req, res) => {
+  const id = req.account._id;
+  const account = await accountModel.findById(id);
+  if (!account) {
+    throw new ErrorResponse(401, "Unauthorized");
+  }
+  return res.status(200).json(account);
+};
+
+const updateAvatar = async (req, res) => {
+  const id = req.account._id;
+  const account = await accountModel.findById(id);
+  if (!account) {
+    throw new ErrorResponse(401, "Unauthorized");
+  }
+  try {
+    if (account.publicId) {
+      await deleteImages(account.publicId);
+    }
+    account.imageUrl = req.imageUrl;
+    account.publicId = req.publicId;
+    await account.save();
+
+    // Trả về thông tin người dùng đã được cập nhật
+    res
+      .status(200)
+      .json({ message: "Update avatar thành công!", data: account });
+  } catch (error) {
+    // Nếu có lỗi, khôi phục ảnh cũ nếu đã xóa
+    if (account && account.publicId) {
+      await restoreImage(account.imageUrl, account.publicId);
+    }
+    await deleteImages(req.publicId);
+    next(error);
+  }
+};
+
+const updateProfile = async (req, res) => {
+  const id = req.account._id;
+  const account = await accountModel.findById(id);
+  if (!account) {
+    throw new ErrorResponse(401, "Unauthorized");
+  }
+  const body = req.body;
+  const { error, value } = accountUpdateValid(body);
+
+  if (error) {
+    throw new ErrorResponse(400, error.message);
+  }
+
+  // Kiểm tra nếu thông tin mới trùng với thông tin hiện tại
+  const unchangedFields = Object.keys(value).filter((key) => {
+    const currentValue = account[key];
+    const newValue = value[key];
+
+    // So sánh giá trị, chuyển đổi sang chuỗi để đảm bảo khớp kiểu
+    return String(currentValue) === String(newValue);
+  });
+
+  if (unchangedFields.length > 0) {
+    throw new ErrorResponse(
+      400,
+      `No changes detected in fields: ${unchangedFields.join(", ")}`,
+    );
+  }
+
+  const accountUpdate = await accountModel.findByIdAndUpdate(id, value, {
+    new: true,
+  });
+
+  return res.status(200).json({
+    message: "Profile updated successfully",
+    data: accountUpdate,
+  });
+};
+
+const getAccount = async (req, res) => {
+  const bodyQuery = {};
+  const { username, sort = "asc" } = req.query; // Thêm sort vào query
+  const { per_page = PER_PAGE, page = 1 } = req.query;
+
+  // Thêm điều kiện tìm kiếm theo tên người dùng (nếu có)
+  if (username) {
+    bodyQuery.username = { $regex: new RegExp(`^${username}`, "i") };
+  }
+
+  // Xử lý sắp xếp theo tên người dùng (hoặc có thể thay đổi thành trường khác)
+  const sortQuery = sort === "asc" ? { username: 1 } : { username: -1 }; // Sắp xếp theo tên, tăng dần hoặc giảm dần
+
+  try {
+    // Lấy dữ liệu tài khoản từ database với các điều kiện tìm kiếm, phân trang và sắp xếp
+    const account = await accountModel
+      .find(bodyQuery)
+      .skip((page - 1) * per_page)
+      .limit(per_page)
+      .sort(sortQuery) // Áp dụng sắp xếp
+      .exec();
+
+    if (!account || account.length === 0) {
+      return res.status(404).json({ message: "No accounts found" });
+    }
+
+    // Đếm số tài khoản phù hợp với điều kiện tìm kiếm
+    const count = await accountModel.countDocuments(bodyQuery);
+
+    const bodyResponse = {
+      current_page: +page,
+      total_page: Math.ceil(count / per_page),
+      count,
+      per_page,
+      data: account,
+    };
+    return res.status(200).json(bodyResponse);
+  } catch (error) {
+    // Xử lý lỗi
+    return res
+      .status(500)
+      .json({ message: "Internal Server Error", error: error.message });
+  }
+};
+
+const deleteAccount = async (req, res) => {
+  const { id } = req.params;
+  const account = await accountModel.findByIdAndDelete(id);
+  if (!account) {
+    return res.status(404).json({ message: "Tài khoản không tồn tại." });
+  }
+  res.status(200).json({ message: "Tài khoản đã được xóa thành công." });
+};
+
 module.exports = {
   createAccount,
   login,
@@ -165,4 +301,10 @@ module.exports = {
   resetPassword,
   refreshAccessToken,
   logOut,
+  profileAuthCurrent,
+  updateAvatar,
+  updateProfile,
+  profileAuthCurrent,
+  getAccount,
+  deleteAccount,
 };

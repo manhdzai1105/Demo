@@ -9,8 +9,8 @@ const app = express();
 
 app.use(
   cors({
-    origin: ["http://localhost:3000"],
-    methods: ["GET", "POST", "PUT"],
+    origin: "http://localhost:3000", // Cho phép yêu cầu từ React (localhost:3000)
+    methods: ["GET", "POST", "PUT", "DELETE"],
     credentials: true,
   }),
 );
