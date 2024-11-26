@@ -1,6 +1,6 @@
 const accountModel = require("../models/account.model");
 const accountValid = require("../validations/account.valid");
-const accountUpdateValid = require("../validations/accountUpdate.valid");
+const account_UpdateValid = require("../validations/account_update");
 const ErrorResponse = require("../helpers/ErrorResponse");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
@@ -14,7 +14,7 @@ const {
 require("dotenv").config();
 const { PER_PAGE } = require("../constants/paging");
 
-const createAccount = async (req, res) => {
+const register = async (req, res) => {
   const body = req.body;
 
   const { error, value } = accountValid(body);
@@ -118,6 +118,31 @@ const resetPassword = async (req, res) => {
   return res.status(200).json({ message: "Password reset successfully!" });
 };
 
+const changePassword = async (req, res) => {
+  const id = req.account._id;
+  const account = await accountModel.findById(id);
+  if (!account) {
+    throw new ErrorResponse(404, "Account not found");
+  }
+  const { oldPassword, newPassword } = req.body;
+  const checkPass = await bcrypt.compare(oldPassword, account.password);
+  if (!checkPass) {
+    throw new ErrorResponse(401, "Mat khau hien tai khong chinh xac");
+  }
+  const { error, value } = passwordValid(newPassword);
+  if (error) {
+    throw new ErrorResponse(400, error.message);
+  }
+  account.password = value.password;
+  account.refreshToken = undefined;
+
+  await account.save();
+  account.passwordChangedAt = Date.now();
+  return res
+    .status(200)
+    .json({ message: "Changed password successfully!", data: account });
+};
+
 const refreshAccessToken = async (req, res) => {
   const refreshToken = req.cookies.refreshToken;
   if (!refreshToken) {
@@ -172,11 +197,11 @@ const profileAuthCurrent = async (req, res) => {
   return res.status(200).json(account);
 };
 
-const updateAvatar = async (req, res) => {
+const updateAvatar = async (req, res, next) => {
   const id = req.account._id;
   const account = await accountModel.findById(id);
   if (!account) {
-    throw new ErrorResponse(401, "Unauthorized");
+    throw new ErrorResponse(404, "Account not found");
   }
   try {
     if (account.publicId) {
@@ -192,51 +217,15 @@ const updateAvatar = async (req, res) => {
       .json({ message: "Update avatar thành công!", data: account });
   } catch (error) {
     // Nếu có lỗi, khôi phục ảnh cũ nếu đã xóa
+    if (req.publicId) {
+      await deleteImages(req.publicId);
+    }
+
     if (account && account.publicId) {
       await restoreImage(account.imageUrl, account.publicId);
     }
-    await deleteImages(req.publicId);
     next(error);
   }
-};
-
-const updateProfile = async (req, res) => {
-  const id = req.account._id;
-  const account = await accountModel.findById(id);
-  if (!account) {
-    throw new ErrorResponse(401, "Unauthorized");
-  }
-  const body = req.body;
-  const { error, value } = accountUpdateValid(body);
-
-  if (error) {
-    throw new ErrorResponse(400, error.message);
-  }
-
-  // Kiểm tra nếu thông tin mới trùng với thông tin hiện tại
-  const unchangedFields = Object.keys(value).filter((key) => {
-    const currentValue = account[key];
-    const newValue = value[key];
-
-    // So sánh giá trị, chuyển đổi sang chuỗi để đảm bảo khớp kiểu
-    return String(currentValue) === String(newValue);
-  });
-
-  if (unchangedFields.length > 0) {
-    throw new ErrorResponse(
-      400,
-      `No changes detected in fields: ${unchangedFields.join(", ")}`,
-    );
-  }
-
-  const accountUpdate = await accountModel.findByIdAndUpdate(id, value, {
-    new: true,
-  });
-
-  return res.status(200).json({
-    message: "Profile updated successfully",
-    data: accountUpdate,
-  });
 };
 
 const getAccount = async (req, res) => {
@@ -252,36 +241,28 @@ const getAccount = async (req, res) => {
   // Xử lý sắp xếp theo tên người dùng (hoặc có thể thay đổi thành trường khác)
   const sortQuery = sort === "asc" ? { username: 1 } : { username: -1 }; // Sắp xếp theo tên, tăng dần hoặc giảm dần
 
-  try {
-    // Lấy dữ liệu tài khoản từ database với các điều kiện tìm kiếm, phân trang và sắp xếp
-    const account = await accountModel
-      .find(bodyQuery)
-      .skip((page - 1) * per_page)
-      .limit(per_page)
-      .sort(sortQuery) // Áp dụng sắp xếp
-      .exec();
+  const account = await accountModel
+    .find(bodyQuery)
+    .skip((page - 1) * per_page)
+    .limit(per_page)
+    .sort(sortQuery) // Áp dụng sắp xếp
+    .exec();
 
-    if (!account || account.length === 0) {
-      return res.status(404).json({ message: "No accounts found" });
-    }
-
-    // Đếm số tài khoản phù hợp với điều kiện tìm kiếm
-    const count = await accountModel.countDocuments(bodyQuery);
-
-    const bodyResponse = {
-      current_page: +page,
-      total_page: Math.ceil(count / per_page),
-      count,
-      per_page,
-      data: account,
-    };
-    return res.status(200).json(bodyResponse);
-  } catch (error) {
-    // Xử lý lỗi
-    return res
-      .status(500)
-      .json({ message: "Internal Server Error", error: error.message });
+  if (!account || account.length === 0) {
+    return res.status(404).json({ message: "No accounts found" });
   }
+
+  // Đếm số tài khoản phù hợp với điều kiện tìm kiếm
+  const count = await accountModel.countDocuments(bodyQuery);
+
+  const bodyResponse = {
+    current_page: +page,
+    total_page: Math.ceil(count / per_page),
+    count,
+    per_page,
+    data: account,
+  };
+  return res.status(200).json(bodyResponse);
 };
 
 const deleteAccount = async (req, res) => {
@@ -293,18 +274,104 @@ const deleteAccount = async (req, res) => {
   res.status(200).json({ message: "Tài khoản đã được xóa thành công." });
 };
 
+const editAccount = async (req, res, next) => {
+  const { id } = req.params;
+
+  const account = await accountModel.findById(id);
+  if (!account) {
+    throw new ErrorResponse(404, "Account not found");
+  }
+
+  try {
+    if (account.publicId) {
+      await deleteImages(account.publicId);
+    }
+
+    const body = req.body;
+    const { error, value } = account_UpdateValid(body);
+
+    value.imageUrl = req.imageUrl;
+    value.publicId = req.publicId;
+
+    if (error) {
+      throw new ErrorResponse(400, error.message);
+    }
+
+    const accountUpdate = await accountModel.findByIdAndUpdate(id, value, {
+      new: true,
+    });
+
+    return res.status(200).json({
+      message: "Account updated successfully",
+      data: accountUpdate,
+    });
+  } catch (error) {
+    if (req.publicId) {
+      await deleteImages(req.publicId);
+    }
+    // Nếu có lỗi, khôi phục ảnh cũ nếu đã xóa
+    if (account && account.publicId) {
+      await restoreImage(account.imageUrl, account.publicId);
+    }
+
+    next(error);
+  }
+};
+
+const createAccount = async (req, res) => {
+  const body = req.body;
+
+  const { error, value } = accountValid(body);
+  // nem loi validation
+  if (error) {
+    throw new ErrorResponse(400, error.message);
+  }
+
+  const account = await accountModel.create(value);
+  return res
+    .status(201)
+    .json({ message: "Tạo tài khoản mới thành công", account });
+};
+
+const updateProfile = async (req, res, next) => {
+  const id = req.account._id;
+
+  const account = await accountModel.findById(id);
+  if (!account) {
+    throw new ErrorResponse(404, "Account not found");
+  }
+
+  const body = req.body;
+  const { error, value } = account_UpdateValid(body);
+
+  if (error) {
+    throw new ErrorResponse(400, error.message);
+  }
+
+  const accountUpdate = await accountModel.findByIdAndUpdate(id, value, {
+    new: true,
+  });
+
+  return res.status(200).json({
+    message: "Account updated successfully",
+    data: accountUpdate,
+  });
+};
+
 module.exports = {
-  createAccount,
+  register,
   login,
   resetPassword,
   forgotPassword,
   resetPassword,
   refreshAccessToken,
   logOut,
-  profileAuthCurrent,
   updateAvatar,
-  updateProfile,
   profileAuthCurrent,
   getAccount,
   deleteAccount,
+  editAccount,
+  createAccount,
+  updateProfile,
+  changePassword,
 };
